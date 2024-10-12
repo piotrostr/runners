@@ -11,7 +11,7 @@
   "dependencies": {
     "@solana/spl-token": "^0.4.8",
     "@solana/web3.js": "^1.95.3",
-    "bs58": "^6.0.0",
+    "commander": "^12.1.0",
     "ioredis": "^5.4.1"
   }
 }
