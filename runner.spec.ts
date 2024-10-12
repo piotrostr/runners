@@ -9,7 +9,7 @@ describe("RunnerService", () => {
   });
 
   it("can send to tg", async () => {
-    runnerService.sendToTG("test", {
+    await runnerService.sendToTG("test", {
       mint: "test",
       timestamp: "test",
       tradeCount: 1,

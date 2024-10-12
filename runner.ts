@@ -23,6 +23,20 @@ export class RunnerService {
     private readonly tg: TelegramBot,
   ) {}
 
+  private formatDuration(seconds: number): string {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainingSeconds = seconds % 60;
+
+    const parts = [];
+    if (hours > 0) parts.push(`${hours}h`);
+    if (minutes > 0) parts.push(`${minutes}m`);
+    if (remainingSeconds > 0 || parts.length === 0)
+      parts.push(`${remainingSeconds}s`);
+
+    return parts.join(" ");
+  }
+
   async addChatId(chatId: number) {
     await this.cache.sadd("telegram:chat_ids", chatId.toString());
   }
@@ -191,17 +205,25 @@ export class RunnerService {
   }
 
   async sendToTG(mintAddress: string, result: CheckRunnerResponse) {
+    // Add separator and heading
     const message = `
-    New Runner Check Result:
-    <b>Mint</b>: ${result.mint}
-    <b>Timestamp</b>: ${result.timestamp}
-    <b>Trade Count</b>: ${result.tradeCount}
-    <b>Valid Trade Count</b>: ${result.validTradeCount}
-    <b>Time to Graduate</b>: ${result.timeToGraduate !== null ? `${result.timeToGraduate} seconds` : "N/A"}
+🏃‍♂️ <b>RUNNER ALERT</b> 🏃‍♂️
+━━━━━━━━━━━━━━━━━━━━━━
 
-    <a href="https://gmgn.ai/sol/token/${mintAddress}">
-      https://gmgn.ai/sol/token/${mintAddress}
-    </a>
+🪙 <b>Token</b>: ${result.mint}
+🕒 <b>Timestamp</b>: ${result.timestamp}
+📊 <b>Trade Count</b>: ${result.tradeCount}
+✅ <b>Valid Trade Count</b>: ${result.validTradeCount}
+🎓 <b>Time to Graduate</b>: ${result.timeToGraduate !== null ? this.formatDuration(result.timeToGraduate) : "N/A"}
+
+<code>${mintAddress}</code>
+
+🔗 <b>Links</b>:
+• <a href="https://solscan.io/address/${mintAddress}">Solana Explorer</a>
+• <a href="https://gmgn.ai/sol/token/${mintAddress}">GMGN</a>
+• <a href="https://bullx.io/terminal?chainId=1399811149&address=${mintAddress}">BULLX</a>
+
+━━━━━━━━━━━━━━━━━━━━━━
   `;
 
     try {
@@ -219,10 +241,6 @@ export class RunnerService {
       );
     }
   }
-
-  //async markSent(mintAddress: string, chatId: number) {
-  //  await this.cache.sadd(`telegram:sent:${mintAddress}`, chatId.toString());
-  //}
 }
 
 export const makeDefaultRunnerService = async () => {
