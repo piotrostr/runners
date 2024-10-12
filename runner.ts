@@ -4,26 +4,67 @@ import {
   PublicKey,
   type ConfirmedSignatureInfo,
 } from "@solana/web3.js";
+import type { EnrichedTransaction } from "helius-sdk";
 import Redis from "ioredis";
+import TelegramBot from "node-telegram-bot-api";
 
 export interface CheckRunnerResponse {
   mint: string;
+  timestamp?: string;
   tradeCount: number;
   validTradeCount: number;
-  timeToGraduate: number;
-}
-
-export interface ShowAllResponse {
-  [mint: string]: CheckRunnerResponse;
+  timeToGraduate: number | null;
 }
 
 export class RunnerService {
   constructor(
     private readonly cache: Redis,
     private readonly connection: Connection,
+    private readonly tg: TelegramBot,
   ) {}
 
+  async addChatId(chatId: number) {
+    await this.cache.sadd("telegram:chat_ids", chatId.toString());
+  }
+
+  async removeChatId(chatId: number) {
+    await this.cache.srem("telegram:chat_ids", chatId.toString());
+  }
+
+  async initBot() {
+    this.tg.on("message", async (msg) => {
+      const chatId = msg.chat.id;
+
+      if (msg.text) {
+        const command = msg.text.toLowerCase();
+
+        if (command === "/start" || command === "/subscribe") {
+          await this.addChatId(chatId);
+          this.tg.sendMessage(chatId, "thanks for sub, gonna send here:3");
+        } else if (command === "/stop" || command === "/unsubscribe") {
+          await this.removeChatId(chatId);
+          this.tg.sendMessage(chatId, "bye .. :c");
+        } else {
+          this.tg.sendMessage(
+            chatId,
+            "/subscribe (/start) or /unsubscribe only",
+          );
+        }
+      }
+    });
+
+    this.tg.on("polling_error", (error) => {
+      console.error("Telegram polling error:", error);
+    });
+
+    this.tg.startPolling();
+  }
+
   PUMP_FUN_PROGRAM = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+
+  async saveWebhook(data: Array<EnrichedTransaction>) {
+    await this.cache.rpush(`webhook:${new Date()}`, JSON.stringify(data));
+  }
 
   getBcAndAbc(mint: PublicKey): [PublicKey, PublicKey] {
     const [bondingCurve] = PublicKey.findProgramAddressSync(
@@ -41,8 +82,8 @@ export class RunnerService {
   }
 
   // NOTE: this will require a cursor and limit later
-  async showAll(): Promise<ShowAllResponse> {
-    const showAllResponse: ShowAllResponse = {};
+  async showAll(): Promise<Array<CheckRunnerResponse>> {
+    const showAllResponse: Array<CheckRunnerResponse> = [];
     try {
       // Get all keys matching the pattern
       const keys = await this.cache.keys("runner:result:*");
@@ -59,7 +100,10 @@ export class RunnerService {
         }
         try {
           const parsed: CheckRunnerResponse = JSON.parse(checkRes);
-          showAllResponse[parsed.mint] = parsed;
+          if (parsed.timeToGraduate === null) {
+            continue;
+          }
+          showAllResponse.push(parsed);
         } catch (error) {
           console.error(`Error parsing result for key ${keys[i]}:`, error);
         }
@@ -67,7 +111,9 @@ export class RunnerService {
     } catch (error) {
       console.error("Error fetching runner results:", error);
     }
-    return showAllResponse;
+    return showAllResponse.sort(
+      (a, b) => a.timeToGraduate! - b.timeToGraduate!,
+    );
   }
 
   async fetchPumpTrades(mint: PublicKey) {
@@ -87,7 +133,7 @@ export class RunnerService {
   }
 
   private async fetchPumpTradesFromRPC(address: PublicKey) {
-    console.debug("fetching trades from RPC");
+    console.debug("fetching trades from RPC for ", address.toString());
     const sigs = await this.connection.getSignaturesForAddress(address);
     return sigs;
   }
@@ -105,8 +151,9 @@ export class RunnerService {
     const key = `runner:result:${mint}`;
     if (await this.cache.exists(key)) {
       console.debug("result already saved", mint.toString());
+      return;
     }
-    console.debug("saving result", mint.toString());
+    console.debug("saving result:", result);
     await this.cache.set(key, JSON.stringify(result));
   }
 
@@ -119,17 +166,90 @@ export class RunnerService {
     );
 
     const timestamps = validTrades.map((trade) => trade.blockTime!);
+    let timeToGraduate;
+    if (timestamps.length === 0) {
+      timeToGraduate = null;
+    } else {
+      timeToGraduate = Math.max(...timestamps) - Math.min(...timestamps);
+    }
 
-    const timeToGraduate = Math.max(...timestamps) - Math.min(...timestamps);
     const result = {
       mint: mintAddress,
+      timestamp: new Date().toISOString(),
       tradeCount: validTrades.length,
       validTradeCount: validTrades.length,
       timeToGraduate,
     };
 
-    this.saveResult(mint, result);
+    await this.saveResult(mint, result);
+
+    if (timeToGraduate !== null) {
+      await this.sendToTG(mintAddress, result);
+    }
 
     return result;
   }
+
+  async sendToTG(mintAddress: string, result: CheckRunnerResponse) {
+    const message = `
+    New Runner Check Result:
+    <b>Mint</b>: ${result.mint}
+    <b>Timestamp</b>: ${result.timestamp}
+    <b>Trade Count</b>: ${result.tradeCount}
+    <b>Valid Trade Count</b>: ${result.validTradeCount}
+    <b>Time to Graduate</b>: ${result.timeToGraduate !== null ? `${result.timeToGraduate} seconds` : "N/A"}
+
+    <a href="https://gmgn.ai/sol/token/${mintAddress}">
+      https://gmgn.ai/sol/token/${mintAddress}
+    </a>
+  `;
+
+    try {
+      const chatIds = await this.cache.smembers("telegram:chat_ids");
+      for (const chatId of chatIds) {
+        await this.tg.sendMessage(chatId, message, { parse_mode: "HTML" });
+      }
+      console.debug(
+        `Sent Telegram message for mint ${mintAddress} to ${chatIds.length} chats`,
+      );
+    } catch (error) {
+      console.error(
+        `Error sending Telegram message for mint ${mintAddress}:`,
+        error,
+      );
+    }
+  }
+
+  //async markSent(mintAddress: string, chatId: number) {
+  //  await this.cache.sadd(`telegram:sent:${mintAddress}`, chatId.toString());
+  //}
 }
+
+export const makeDefaultRunnerService = async () => {
+  if (!process.env.RPC_URL) {
+    throw new Error("RPC_URL env variable is required");
+  }
+  if (!process.env.TELEGRAM_BOT_TOKEN) {
+    throw new Error("TELEGRAM_BOT_TOKEN env variable is required");
+  }
+  const cache = new Redis({
+    port: 6379,
+    host: process.env.REDIS_HOST || "localhost",
+    lazyConnect: true,
+  });
+
+  await cache.connect((err) => {
+    if (err) {
+      console.error("Failed to connect to Redis:", err);
+      process.exit(1);
+    }
+  });
+
+  const connection = new Connection(process.env.RPC_URL!);
+  const tg = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN!, {
+    polling: false,
+  });
+  const runnerService = new RunnerService(cache, connection, tg);
+  await runnerService.initBot();
+  return runnerService;
+};

@@ -1,4 +1,6 @@
+import type { EnrichedTransaction } from "helius-sdk";
 import type { RunnerService, CheckRunnerResponse } from "./runner";
+import { Parser } from "./parser";
 
 export const serveService = (runnerService: RunnerService) => {
   Bun.serve({
@@ -6,6 +8,16 @@ export const serveService = (runnerService: RunnerService) => {
     async fetch(req) {
       console.debug("got request", req.url);
       const url = new URL(req.url);
+
+      if (url.pathname === "/webhook") {
+        const webhookData: Array<EnrichedTransaction> = await req.json();
+        await runnerService.saveWebhook(webhookData);
+        for (const data of webhookData) {
+          const mint = new Parser(data).mint();
+          await runnerService.checkRunner(mint);
+        }
+        return new Response("OK");
+      }
 
       if (url.pathname === "/check-runner" && req.method === "GET") {
         try {
