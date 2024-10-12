@@ -13,6 +13,10 @@ export interface CheckRunnerResponse {
   timeToGraduate: number;
 }
 
+export interface ShowAllResponse {
+  [mint: string]: CheckRunnerResponse;
+}
+
 export class RunnerService {
   constructor(
     private readonly cache: Redis,
@@ -34,6 +38,36 @@ export class RunnerService {
     );
 
     return [bondingCurve, associatedBondingCurve];
+  }
+
+  // NOTE: this will require a cursor and limit later
+  async showAll(): Promise<ShowAllResponse> {
+    const showAllResponse: ShowAllResponse = {};
+    try {
+      // Get all keys matching the pattern
+      const keys = await this.cache.keys("runner:result:*");
+
+      // Fetch values for all keys
+      const values = await this.cache.mget(...keys);
+
+      // Process the results
+      for (let i = 0; i < keys.length; i++) {
+        const checkRes = values[i];
+        if (!checkRes) {
+          console.error(`Null result for key: ${keys[i]}`);
+          continue;
+        }
+        try {
+          const parsed: CheckRunnerResponse = JSON.parse(checkRes);
+          showAllResponse[parsed.mint] = parsed;
+        } catch (error) {
+          console.error(`Error parsing result for key ${keys[i]}:`, error);
+        }
+      }
+    } catch (error) {
+      console.error("Error fetching runner results:", error);
+    }
+    return showAllResponse;
   }
 
   async fetchPumpTrades(mint: PublicKey) {

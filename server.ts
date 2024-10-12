@@ -27,6 +27,12 @@ export const serveService = (runnerService: RunnerService) => {
         }
       }
 
+      if (url.pathname === "/" && req.method === "GET") {
+        return new Response(JSON.stringify(await runnerService.showAll()), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
       return new Response("Not Found", { status: 404 });
     },
   });

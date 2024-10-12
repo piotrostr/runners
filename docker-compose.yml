@@ -1,0 +1,23 @@
+services:
+  runner-service:
+    build: .
+    image: piotrostr/runner-service
+    ports:
+      - "3420:3420"
+    env_file: .env
+    environment:
+      - REDIS_HOST=redis
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis-data:/data
+    command: redis-server --appendonly yes
+
+volumes:
+  redis-data:
+    driver: local

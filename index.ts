@@ -15,8 +15,21 @@ program
       throw new Error("RPC_URL env variable is required");
     }
 
+    const cache = new Redis({
+      port: 6379,
+      host: process.env.REDIS_HOST || "localhost",
+      lazyConnect: true,
+    });
+
+    await cache.connect((err) => {
+      if (err) {
+        console.error("Failed to connect to Redis:", err);
+        process.exit(1);
+      }
+    });
+
     const runnerService = new RunnerService(
-      new Redis(),
+      cache,
       new Connection(process.env.RPC_URL!),
     );
 
