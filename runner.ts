@@ -1,4 +1,8 @@
-import { getAssociatedTokenAddressSync } from "@solana/spl-token";
+import {
+  getAssociatedTokenAddressSync,
+  MintLayout,
+  type RawMint,
+} from "@solana/spl-token";
 import {
   Connection,
   PublicKey,
@@ -14,6 +18,20 @@ export interface CheckRunnerResponse {
   tradeCount: number;
   validTradeCount: number;
   timeToGraduate: number | null;
+  decimals: number | null;
+  supply: string | null;
+  topHolders: TopHolders;
+}
+
+export interface TopHolder {
+  address: string;
+  amount: string;
+  percentage: number;
+}
+
+export interface TopHolders {
+  topHolders: Array<TopHolder>;
+  topTenAsPctTotal: number;
 }
 
 export class RunnerService {
@@ -171,6 +189,68 @@ export class RunnerService {
     await this.cache.set(key, JSON.stringify(result));
   }
 
+  async getSplData(mint: PublicKey): Promise<RawMint | null> {
+    const accountInfo = await this.connection.getAccountInfo(mint);
+    if (!accountInfo || !accountInfo.data) {
+      console.error(`Account not found for mint ${mint.toString()}`);
+      return null;
+    }
+    const mintInfo = MintLayout.decode(Uint8Array.from(accountInfo.data));
+    return mintInfo;
+  }
+
+  async getTopHolders(
+    mint: PublicKey,
+    limit: number = 10,
+    splData: RawMint | null = null,
+  ): Promise<TopHolders> {
+    if (!splData) {
+      splData = await this.getSplData(mint);
+    }
+    if (!splData) {
+      console.error(`No SPL data found for mint ${mint.toString()}`);
+      return { topHolders: [], topTenAsPctTotal: 0 };
+    }
+    const balances = await this.connection.getTokenLargestAccounts(mint);
+
+    if (!balances.value || balances.value.length === 0) {
+      console.error(`No balances found for mint ${mint.toString()}`);
+      return { topHolders: [], topTenAsPctTotal: 0 };
+    }
+
+    const sortedBalances = balances.value
+      .sort((a, b) => {
+        const amountA = BigInt(a.amount);
+        const amountB = BigInt(b.amount);
+        return amountB > amountA ? 1 : amountB < amountA ? -1 : 0;
+      })
+      .slice(0, Math.min(10, balances.value.length));
+
+    const topHolders: TopHolder[] = sortedBalances
+      .slice(0, limit)
+      .map((balance) => {
+        const amount = BigInt(balance.amount);
+        return {
+          address: balance.address.toBase58(),
+          amount: amount.toString(),
+          percentage:
+            Number((amount * BigInt(100) * BigInt(100)) / splData.supply) / 100,
+        };
+      });
+
+    const topTenTotal = sortedBalances.reduce(
+      (sum, balance) => sum + BigInt(balance.amount),
+      BigInt(0),
+    );
+    const topTenAsPctTotal =
+      Number((topTenTotal * BigInt(100) * BigInt(100)) / splData.supply) / 100;
+
+    return {
+      topHolders,
+      topTenAsPctTotal,
+    };
+  }
+
   async checkRunner(mintAddress: string): Promise<CheckRunnerResponse> {
     const mint = new PublicKey(mintAddress);
     const trades = await this.fetchPumpTrades(mint);
@@ -187,12 +267,19 @@ export class RunnerService {
       timeToGraduate = Math.max(...timestamps) - Math.min(...timestamps);
     }
 
-    const result = {
+    const splData = await this.getSplData(mint);
+
+    const topHolders = await this.getTopHolders(mint);
+
+    const result: CheckRunnerResponse = {
       mint: mintAddress,
       timestamp: new Date().toISOString(),
       tradeCount: validTrades.length,
       validTradeCount: validTrades.length,
       timeToGraduate,
+      decimals: splData?.decimals ?? null,
+      supply: splData?.supply.toString() ?? null,
+      topHolders,
     };
 
     await this.saveResult(mint, result);
@@ -208,22 +295,30 @@ export class RunnerService {
     // Add separator and heading
     const message = `
 🏃‍♂️ <b>RUNNER ALERT</b> 🏃‍♂️
-━━━━━━━━━━━━━━━━━━━━━━
 
-🪙 <b>Token</b>: ${result.mint}
+<code>${mintAddress}</code>
+
 🕒 <b>Timestamp</b>: ${result.timestamp}
 📊 <b>Trade Count</b>: ${result.tradeCount}
 ✅ <b>Valid Trade Count</b>: ${result.validTradeCount}
 🎓 <b>Time to Graduate</b>: ${result.timeToGraduate !== null ? this.formatDuration(result.timeToGraduate) : "N/A"}
-
-<code>${mintAddress}</code>
 
 🔗 <b>Links</b>:
 • <a href="https://solscan.io/address/${mintAddress}">Solana Explorer</a>
 • <a href="https://gmgn.ai/sol/token/${mintAddress}">GMGN</a>
 • <a href="https://bullx.io/terminal?chainId=1399811149&address=${mintAddress}">BULLX</a>
 
-━━━━━━━━━━━━━━━━━━━━━━
+📈 <b>Supply</b>: ${result.supply}
+🔢 <b>Decimals</b>: ${result.decimals}
+
+📊 <b>Top 10 as % of Total</b>: ${result.topHolders.topTenAsPctTotal.toFixed(2)}%
+📊 <b>Top Holders</b>:
+${result.topHolders.topHolders
+  .map(
+    (holder) =>
+      `• <a href="https://solscan.io/address/${holder.address}">${holder.address}</a> - ${holder.amount} (${holder.percentage.toFixed(2)}%)`,
+  )
+  .join("\n")}
   `;
 
     try {
